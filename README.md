@@ -1,14 +1,3 @@
-# NYUSH_Robotics_RM_RadarStation
-Code for Radar Station, The Great Lakes Team, NYUSH Robotics RMCV Team.
-# 厦门理工学院PFA战队单目相机雷达站算法开源（含机器人、装甲板识别模型）
- **【已更新最新的串口通信协议，国赛即插即用！！！】** 
-
-
-【全场透视！979.6s有效标记定位！｜厦门理工学院雷达机器人研发方案分享】 https://www.bilibili.com/video/BV1jD421g7ab/
-
-
-【RoboMaster2024青年工程师大会｜厦门理工学院雷达视觉算法设计思路分享】 https://www.bilibili.com/video/BV1uJ4m137uh/
-
 #### 功能介绍
 
 基于此算法，使用 **任意单目相机** 和 **任意运算端** ，即可实现 **雷达站的所有功能** ，主要功能如下：
@@ -19,21 +8,9 @@ Code for Radar Station, The Great Lakes Team, NYUSH Robotics RMCV Team.
 5. 裁判系统双向通信
 6. 支持USB相机和海康相机
 
-
-#### 效果展示
-1. 场均标点**全国一等奖**
-![全国雷达排名第一](images/%E5%85%A8%E5%9B%BD%E7%AC%AC%E4%B8%80.JPG)
-2. 南部赛区累计标点数第三
-![南部雷达](images/image1.jpg)
-3. 比赛大部分时间全场高亮、主动发动双倍易伤
-![双倍易伤](images/image2.png)
-![全场高亮](images/image4.jpg)
-
-
 #### 软件依赖
 1. Python3.9
 2. Windows10、Linux（Ubuntu支持，其他Linux系统可能需要适配）
-
 
 #### 硬件要求
 1. 海康工业相机/USB直驱相机
@@ -41,7 +18,6 @@ Code for Radar Station, The Great Lakes Team, NYUSH Robotics RMCV Team.
 3. 有GPU的运算端，推荐RTX3060以上
 4. 推荐配置：相机MV-CS060-10UC-PRO（USB款），镜头5-12ｍｍ（6ｍｍ最佳）
 ![硬件推荐](images/image6.JPG)
-
 
 #### 配置环境
 1.  pip install -r requirements.txt 

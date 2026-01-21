@@ -49,6 +49,18 @@ if camera_mode == "hik":
 state = input("robot state (R/B): ").strip().upper()
 if state not in {"R", "B"}:
     raise ValueError("robot state must be R or B")
+
+MAP_MODE = (input("map mode (battle/testmap) [battle]: ").strip().lower() or "battle")
+
+TEST_MAP_PATH = None
+TEST_NPY_PATH = None
+TEST_MASK_PATH = None  # optional
+
+if MAP_MODE == "testmap":
+    TEST_MAP_PATH = str(Path(input("test map image path (e.g. images/my_map(m).jpg): ").strip()).expanduser())
+    TEST_NPY_PATH = str(Path(input("test npy path (e.g. array_test_custom.npy): ").strip()).expanduser())
+    s = input("test mask path [none]: ").strip()
+    TEST_MASK_PATH = None if (not s or s.lower() == "none") else str(Path(s).expanduser())
 # =========================
 
 import threading
@@ -71,20 +83,38 @@ from threading import Lock
 frame_lock = Lock()
 camera_image = None
 
-
-if state == 'R':
-    loaded_arrays = np.load('arrays_test_red.npy')  # 加载标定好的仿射变换矩阵
-    map_image = cv2.imread("images/map_red.jpg")  # 加载红方视角地图
-    mask_image = cv2.imread("images/map_mask.jpg")  # 加载红发落点判断掩码
+if MAP_MODE == "battle":
+    if state == 'R':
+        loaded_arrays = np.load('arrays_test_red.npy')  # 加载标定好的仿射变换矩阵
+        map_image = cv2.imread("images/map_red.jpg")  # 加载红方视角地图
+        mask_image = cv2.imread("images/map_mask.jpg")  # 加载红发落点判断掩码
+    else:
+        loaded_arrays = np.load('arrays_test_blue.npy')  # 加载标定好的仿射变换矩阵
+        map_image = cv2.imread("images/map_blue.jpg")  # 加载蓝方视角地图
+        mask_image = cv2.imread("images/map_mask.jpg")  # 加载蓝方落点判断掩码
+    DISPLAY_MAP_PATH = "images/map.jpg"
 else:
-    loaded_arrays = np.load('arrays_test_blue.npy')  # 加载标定好的仿射变换矩阵
-    map_image = cv2.imread("images/map_blue.jpg")  # 加载蓝方视角地图
-    mask_image = cv2.imread("images/map_mask.jpg")  # 加载蓝方落点判断掩码
+    # --- test map mode ---
+    loaded_arrays = np.load(TEST_NPY_PATH, allow_pickle=True)
+    map_image = cv2.imread(TEST_MAP_PATH)
 
+    if map_image is None:
+        raise FileNotFoundError(f"Cannot read test map image: {TEST_MAP_PATH}")
+
+    if TEST_MASK_PATH:
+        mask_image = cv2.imread(TEST_MASK_PATH)
+        if mask_image is None:
+            raise FileNotFoundError(f"Cannot read test mask image: {TEST_MASK_PATH}")
+    else:
+        # all-black mask => forces the code to accept the ground layer first
+        mask_image = np.zeros_like(map_image)
+    DISPLAY_MAP_PATH = TEST_MAP_PATH
+
+nT = len(loaded_arrays)
 # 导入战场每个高度的不同仿射变化矩阵
-M_height_r = loaded_arrays[1]  # R型高地
-M_height_g = loaded_arrays[2]  # 环形高地
 M_ground = loaded_arrays[0]  # 地面层、公路层
+M_height_r = loaded_arrays[1]  if nT > 1 else M_ground  # R型高地
+M_height_g = loaded_arrays[2]  if nT > 2 else M_ground  # 环形高地
 
 # 确定地图画面像素，保证不会溢出
 height, width = mask_image.shape[:2]
@@ -101,8 +131,13 @@ chances_flag = 1  # 双倍易伤触发标志位，需要从1递增，每小局�
 progress_list = [-1, -1, -1, -1, -1, -1]  # 标记进度列表
 
 # 加载战场地图
-map_backup = cv2.imread("images/map.jpg")
+# 加载战场地图（用于UI显示）
+map_backup = cv2.imread(DISPLAY_MAP_PATH)
+if map_backup is None:
+    raise FileNotFoundError(f"Cannot read display map: {DISPLAY_MAP_PATH}")
 map = map_backup.copy()
+
+MAP_H, MAP_W = map.shape[:2]
 
 # 初始化盲区预测列表
 guess_list = {
@@ -855,6 +890,7 @@ while True:
     # 获取所有识别到的机器人坐标
     all_filter_data = filter.get_all_data()
     # print(all_filter_data_name)
+
     if all_filter_data != {}:
         for name, xyxy in all_filter_data.items():
             if xyxy is not None:
@@ -863,9 +899,10 @@ while True:
                 else:
                     color_m = (255, 0, 0)
                 if state == 'R':
-                    filtered_xyz = (2800 - xyxy[1], xyxy[0])  # 缩放坐标到地图图像
+                    filtered_xyz = (MAP_W - xyxy[1], xyxy[0])
                 else:
-                    filtered_xyz = (xyxy[1], 1500 - xyxy[0])  # 缩放坐标到地图图像
+                    filtered_xyz = (xyxy[1], MAP_H - xyxy[0])
+                # 缩放坐标到地图图像
                 # 只绘制敌方阵营的机器人（这里不会绘制盲区预测的机器人）
                 if name[0] != state:
                     cv2.circle(map, (int(filtered_xyz[0]), int(filtered_xyz[1])), 15, color_m, -1)  # 绘制圆
@@ -873,7 +910,8 @@ while True:
                                 (int(filtered_xyz[0]) - 5, int(filtered_xyz[1]) + 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 2.5, (255, 255, 255), 5)
                     ser_x = int(filtered_xyz[0]) * 10 / 10
-                    ser_y = int(1500 - filtered_xyz[1]) * 10 / 10
+                    ser_y = int(MAP_H - filtered_xyz[1]) * 10 / 10
+
                     cv2.putText(map, "(" + str(ser_x) + "," + str(ser_y) + ")",
                                 (int(filtered_xyz[0]) - 100, int(filtered_xyz[1]) + 60),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 4)

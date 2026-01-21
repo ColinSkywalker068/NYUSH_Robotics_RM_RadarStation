@@ -11,7 +11,7 @@ import sys
 
 
 # 海康相机图像获取线程
-def hik_camera_get():
+def hik_camera_get(cfg):
     # 获得设备信息
     global camera_image
     deviceList = MV_CC_DEVICE_INFO_LIST()
@@ -95,8 +95,21 @@ def hik_camera_get():
           get_Value(cam, param_type="float_value", node_name="AcquisitionFrameRate"))
 
     # 设置设备的一些参数
-    set_Value(cam, param_type="float_value", node_name="ExposureTime", node_value=16000)  # 曝光时间
-    set_Value(cam, param_type="float_value", node_name="Gain", node_value=17.9)  # 增益值
+    # ---- Apply camera settings (same logic as main.py) ----
+    set_Value(cam, param_type="enum_value", node_name="ExposureAuto", node_value=int(cfg["AUTO_EXPOSURE"]))
+    set_Value(cam, param_type="enum_value", node_name="GainAuto",     node_value=int(cfg["AUTO_GAIN"]))
+
+    if int(cfg["AUTO_EXPOSURE"]) == 0:
+        set_Value(cam, param_type="float_value", node_name="ExposureTime", node_value=float(cfg["EXPOSURE_TIME_US"]))
+    if int(cfg["AUTO_GAIN"]) == 0:
+        set_Value(cam, param_type="float_value", node_name="Gain", node_value=float(cfg["GAIN_DB"]))
+
+    if cfg["ROI"] is not None:
+        set_Value(cam, param_type="int_value", node_name="OffsetX", node_value=int(cfg["ROI"]["OffsetX"]))
+        set_Value(cam, param_type="int_value", node_name="OffsetY", node_value=int(cfg["ROI"]["OffsetY"]))
+        set_Value(cam, param_type="int_value", node_name="Width",   node_value=int(cfg["ROI"]["Width"]))
+        set_Value(cam, param_type="int_value", node_name="Height",  node_value=int(cfg["ROI"]["Height"]))
+
     # 开启设备取流
     start_grab_and_get_data_size(cam)
     # 主动取流方式抓取图像
@@ -136,9 +149,16 @@ color = [(255, 255, 255), (0, 255, 0), (0, 0, 255)]
 
 
 class MyUI(QWidget):
-    def __init__(self):
+    def __init__(self, state, map_profile="battle", custom_map_path=None, custom_save_path=None, num_heights=3):
         super().__init__()
         self.capturing = True
+
+        self.state = state
+        self.map_profile = map_profile
+        self.custom_map_path = custom_map_path
+        self.custom_save_path = custom_save_path
+        self.num_heights = num_heights
+
         self.initUI()
 
     def initUI(self):
@@ -148,10 +168,8 @@ class MyUI(QWidget):
         self.left_top_label.setFixedSize(1350, 1000)
         self.left_top_label.setStyleSheet("border: 2px solid black;")
         self.left_top_label.mousePressEvent = self.left_top_clicked
-        self.image_points = [[(0, 0), (0, 0), (0, 0), (0, 0)], [(0, 0), (0, 0), (0, 0), (0, 0)],
-                             [(0, 0), (0, 0), (0, 0), (0, 0)], [(0, 0), (0, 0), (0, 0), (0, 0)]]
-        self.map_points = [[(0, 0), (0, 0), (0, 0), (0, 0)], [(0, 0), (0, 0), (0, 0), (0, 0)],
-                           [(0, 0), (0, 0), (0, 0), (0, 0)], [(0, 0), (0, 0), (0, 0), (0, 0)]]
+        self.image_points = [[(0, 0), (0, 0), (0, 0), (0, 0)] for _ in range(self.num_heights)]
+        self.map_points   = [[(0, 0), (0, 0), (0, 0), (0, 0)] for _ in range(self.num_heights)]
         self.image_count = 0
         self.map_count = 0
         # 右上角部分
@@ -182,13 +200,24 @@ class MyUI(QWidget):
         self.button4.clicked.connect(self.button4_clicked)
         self.height = 0
         self.T = []
-        if self.state == 'R':
-            self.save_path = 'arrays_test_red.npy'
-            right_image_path = "images/map_red.jpg"  # 替换为右边图片的路径
-        else:
-            self.save_path = 'arrays_test_blue.npy'
-            right_image_path = "images/map_blue.jpg"  # 替换为右边图片的路径
 
+        # Choose map + output npy by profile
+        if self.map_profile == "testmap":
+            self.save_path = self.custom_save_path or "arrays_test_custom.npy"
+            right_image_path = self.custom_map_path
+        else:
+            # original battlefield behavior (unchanged)
+            if self.state == 'R':
+                self.save_path = 'arrays_test_red.npy'
+                right_image_path = "images/map_red.jpg"
+            else:
+                self.save_path = 'arrays_test_blue.npy'
+                right_image_path = "images/map_blue.jpg"
+
+        # Load right-side map image
+        right_image = cv2.imread(right_image_path)
+        if right_image is None:
+            raise FileNotFoundError(f"Could not read map image: {right_image_path}")
         # _,left_image = self.camera_capture.read()
         left_image = camera_image
         right_image = cv2.imread(right_image_path)
@@ -311,7 +340,7 @@ class MyUI(QWidget):
         self.append_text('切换高度')
         self.image_count = 0
         self.map_count = 0
-        self.height = (self.height + 1) % 3
+        self.height = (self.height + 1) % self.num_heights
         print('切换高度')
 
     def button3_clicked(self):
@@ -324,7 +353,7 @@ class MyUI(QWidget):
         # 按钮4点击事件
         print(self.image_points)
         print(self.map_points)
-        for i in range(0, 3):
+        for i in range(self.num_heights):
             image_point = np.array(self.image_points[i], dtype=np.float32)
             map_point = np.array(self.map_points[i], dtype=np.float32)
             self.T.append(cv2.getPerspectiveTransform(image_point, map_point))
@@ -358,8 +387,60 @@ class MyUI(QWidget):
 
 if __name__ == '__main__':
     camera_mode = input("camera mode selection (test/hik/video): ")  # 'test':测试模式,'hik':海康相机,'video':USB相机（videocapture）
+    
+    HIK_CFG = None
+    VIDEO_CFG = None
+
+    if camera_mode == "hik":
+        # 0=Off, 1=Once, 2=Continuous  (IMPORTANT: must be int, not "Continuous")
+        AUTO_EXPOSURE = int(input("auto exposure (0/1/2) [2]: ") or "2")
+        AUTO_GAIN     = int(input("auto gain (0/1/2) [2]: ") or "2")
+
+        EXPOSURE_TIME_US = None
+        GAIN_DB = None
+        if AUTO_EXPOSURE == 0:
+            EXPOSURE_TIME_US = float(input("exposure time (us) [16000]: ") or "16000")
+        if AUTO_GAIN == 0:
+            GAIN_DB = float(input("gain (dB) [17.9]: ") or "17.9")
+
+        # Optional ROI (controls output width/height)
+        SET_ROI = (input("set ROI? (y/n) [n]: ").strip().lower() or "n") == "y"
+        ROI = None
+        if SET_ROI:
+            ROI = {
+                "OffsetX": int(input("OffsetX [0]: ") or "0"),
+                "OffsetY": int(input("OffsetY [0]: ") or "0"),
+                "Width":   int(input("Width (e.g. 1536): ")),
+                "Height":  int(input("Height (e.g. 1024): ")),
+            }
+
+        HIK_CFG = {
+            "AUTO_EXPOSURE": AUTO_EXPOSURE,
+            "AUTO_GAIN": AUTO_GAIN,
+            "EXPOSURE_TIME_US": EXPOSURE_TIME_US,
+            "GAIN_DB": GAIN_DB,
+            "ROI": ROI,
+        }
+
+    elif camera_mode == "video":
+        VIDEO_DEVICE_INDEX = int(input("video device index [1]: ") or "1")
+        VIDEO_W = int(input("video width [1280]: ") or "1280")
+        VIDEO_H = int(input("video height [720]: ") or "720")
+        VIDEO_CFG = {"index": VIDEO_DEVICE_INDEX, "w": VIDEO_W, "h": VIDEO_H}
+
     camera_image = None
     state = input("state selection (R/B): ")  # R:红方/B:蓝方
+    map_profile = input("map profile (battle/testmap): ").strip().lower() or "battle"
+
+    custom_map_path = None
+    custom_save_path = None
+    num_heights = 3
+
+    if map_profile == "testmap":
+        # right-side map you want to click on
+        custom_map_path = input("custom map image path (e.g. images/my_map.jpg): ").strip().strip('"').strip("'")
+        custom_save_path = input("save npy name [arrays_test_custom.npy]: ").strip().strip('"').strip("'") or "arrays_test_custom.npy"
+        num_heights = int(input("number of heights [1]: ").strip() or "1")
 
     if camera_mode == 'test':
         camera_image = cv2.imread(str(input("Enter image path: ")))
@@ -377,16 +458,17 @@ if __name__ == '__main__':
             from MvImport_Linux.MvCameraControl_class import *
 
             print('linux')
-        thread_camera = threading.Thread(target=hik_camera_get, daemon=True)
+        thread_camera = threading.Thread(target=hik_camera_get, args=(HIK_CFG,), daemon=True)
         thread_camera.start()
     elif camera_mode == 'video':
         # USB相机图像获取线程
-        thread_camera = threading.Thread(target=video_capture_get, daemon=True)
+        thread_camera = threading.Thread(target=hik_camera_get, args=(HIK_CFG,), daemon=True)
         thread_camera.start()
 
     while camera_image is None:
         print("waiting for camera image...")
         time.sleep(0.5)
     app = QApplication(sys.argv)
-    myui = MyUI()
+    myui = MyUI(state=state, map_profile=map_profile, custom_map_path=custom_map_path,
+            custom_save_path=custom_save_path, num_heights=num_heights)
     sys.exit(app.exec_())

@@ -1,3 +1,5 @@
+#QT_QPA_PLATFORM=wayland python calibration.py
+
 from pathlib import Path
 
 # =========================
@@ -22,8 +24,9 @@ if camera_mode == "video":
         VIDEO_DEVICE_INDEX = int(s) if s else 1
 
 # ---- Hik camera configs ----
-AUTO_EXPOSURE = None
-AUTO_GAIN = None
+# Hik enum values: ExposureAuto/GainAuto -> 0: Off, 1: Once, 2: Continuous (common for MVS SDK)
+AUTO_EXPOSURE = 2
+AUTO_GAIN = 2
 EXPOSURE_TIME_US = None
 GAIN_DB = None
 ROI_OFFSET_X = 0
@@ -32,18 +35,16 @@ FRAME_WIDTH = None
 FRAME_HEIGHT = None
 
 if camera_mode == "hik":
-    # 0 - off, 1 - once, 2 - continuous
-    AUTO_EXPOSURE = int(input("auto exposure (0/1/2): "))
-    AUTO_GAIN     = int(input("auto gain (0/1/2): "))
-
-    # Only ask manual values if auto is OFF
+    s = input("auto exposure (0=off,1=once,2=continuous) [2]: ").strip()
+    AUTO_EXPOSURE = int(s) if s else 2
+    s = input("auto gain (0=off,1=once,2=continuous) [2]: ").strip()
+    AUTO_GAIN = int(s) if s else 2
     if AUTO_EXPOSURE == 0:
-        EXPOSURE_TIME_US = float(input("exposure time (us): "))
+        s = input("exposure time (us) [10000]: ").strip()
+        EXPOSURE_TIME_US = float(s) if s else 10000.0
     if AUTO_GAIN == 0:
-        GAIN_DB = float(input("gain (dB): "))
-
-    FRAME_WIDTH  = int(input("frame width (e.g. 1536): ").strip())
-    FRAME_HEIGHT = int(input("frame height (e.g. 1024): ").strip())
+        s = input("gain (dB) [0]: ").strip()
+        GAIN_DB = float(s) if s else 0.0
 
 # ---- Robot team state ----
 state = input("robot state (R/B): ").strip().upper()
@@ -57,10 +58,9 @@ TEST_NPY_PATH = None
 TEST_MASK_PATH = None  # optional
 
 if MAP_MODE == "testmap":
-    TEST_MAP_PATH = str(Path(input("test map image path (e.g. images/my_map(m).jpg): ").strip()).expanduser())
-    TEST_NPY_PATH = str(Path(input("test npy path (e.g. array_test_custom.npy): ").strip()).expanduser())
-    s = input("test mask path [none]: ").strip()
-    TEST_MASK_PATH = None if (not s or s.lower() == "none") else str(Path(s).expanduser())
+    TEST_MAP_PATH = str(Path("images/my_map(m).jpg").expanduser())
+    TEST_NPY_PATH = str(Path("array_test_custom.npy").expanduser())
+    TEST_MASK_PATH = None
 # =========================
 
 import threading
@@ -354,25 +354,22 @@ def hik_camera_get():
           get_Value(cam, param_type="enum_value", node_name="TriggerMode"),
           get_Value(cam, param_type="float_value", node_name="AcquisitionFrameRate"))
 
-    # 设置设备的一些参数
     # ---- Auto modes (must be set before grabbing) ----
-    # Always set the enum (0/1/2)
     set_Value(cam, param_type="enum_value", node_name="ExposureAuto", node_value=int(AUTO_EXPOSURE))
     set_Value(cam, param_type="enum_value", node_name="GainAuto",     node_value=int(AUTO_GAIN))
 
-    # Only set manual values when auto is OFF (0)
-    if int(AUTO_EXPOSURE) == 0:
+    if int(AUTO_EXPOSURE) == 0 and EXPOSURE_TIME_US is not None:
         set_Value(cam, param_type="float_value", node_name="ExposureTime", node_value=float(EXPOSURE_TIME_US))
 
-    if int(AUTO_GAIN) == 0:
+    if int(AUTO_GAIN) == 0 and GAIN_DB is not None:
         set_Value(cam, param_type="float_value", node_name="Gain", node_value=float(GAIN_DB))
 
-    # ---- ROI settings ----
-
-    set_Value(cam, param_type="int_value", node_name="OffsetX", node_value=ROI_OFFSET_X)
-    set_Value(cam, param_type="int_value", node_name="OffsetY", node_value=ROI_OFFSET_Y)
-    set_Value(cam, param_type="int_value", node_name="Width",   node_value=FRAME_WIDTH)
-    set_Value(cam, param_type="int_value", node_name="Height",  node_value=FRAME_HEIGHT)
+    # ---- ROI settings (leave None to keep defaults) ----
+    if FRAME_WIDTH is not None:
+        set_Value(cam, param_type="int_value", node_name="OffsetX", node_value=ROI_OFFSET_X)
+        set_Value(cam, param_type="int_value", node_name="OffsetY", node_value=ROI_OFFSET_Y)
+        set_Value(cam, param_type="int_value", node_name="Width",   node_value=FRAME_WIDTH)
+        set_Value(cam, param_type="int_value", node_name="Height",  node_value=FRAME_HEIGHT)
     # 开启设备取流
     start_grab_and_get_data_size(cam)
     # 主动取流方式抓取图像
@@ -756,10 +753,8 @@ def ser_receive():
 filter = Filter(window_size=3, max_inactive_time=2)
 
 # 加载模型，实例化机器人检测器和装甲板检测器
-weights_path = 'models/car.onnx'  # 建议把模型转换成TRT的engine模型，推理速度提升10倍，转换方式看README
-weights_path_next = 'models/armor.onnx'
-# weights_path = 'models/car.engine'
-# weights_path_next = 'models/armor.engine'
+weights_path = 'models/car.engine'  # 建议把模型转换成TRT的engine模型，推理速度提升10倍，转换方式看README
+weights_path_next = 'models/armor.engine'
 detector = YOLOv5Detector(weights_path, data='yaml/car.yaml', conf_thres=0.1, iou_thres=0.5, max_det=14, ui=True)
 detector_next = YOLOv5Detector(weights_path_next, data='yaml/armor.yaml', conf_thres=0.50, iou_thres=0.2,
                                max_det=1,
@@ -908,13 +903,13 @@ while True:
                     cv2.circle(map, (int(filtered_xyz[0]), int(filtered_xyz[1])), 15, color_m, -1)  # 绘制圆
                     cv2.putText(map, str(name),
                                 (int(filtered_xyz[0]) - 5, int(filtered_xyz[1]) + 5),
-                                cv2.FONT_HERSHEY_SIMPLEX, 2.5, (255, 255, 255), 5)
+                                cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 255), 5)
                     ser_x = int(filtered_xyz[0]) * 10 / 10
                     ser_y = int(MAP_H - filtered_xyz[1]) * 10 / 10
 
                     cv2.putText(map, "(" + str(ser_x) + "," + str(ser_y) + ")",
                                 (int(filtered_xyz[0]) - 100, int(filtered_xyz[1]) + 60),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 4)
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 4)
 
     te = time.time()
     t_p = te - ts

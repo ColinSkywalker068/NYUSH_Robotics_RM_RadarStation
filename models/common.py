@@ -404,22 +404,46 @@ class DetectMultiBackend(nn.Module):
             output_names = []
             fp16 = False  # default updated below
             dynamic = False
-            for i in range(model.num_bindings):
-                name = model.get_binding_name(i)
-                dtype = trt.nptype(model.get_binding_dtype(i))
-                if model.binding_is_input(i):
-                    if -1 in tuple(model.get_binding_shape(i)):  # dynamic
-                        dynamic = True
-                        context.set_binding_shape(i, tuple(model.get_profile_shape(0, i)[2]))
-                    if dtype == np.float16:
-                        fp16 = True
-                else:  # output
-                    output_names.append(name)
-                shape = tuple(context.get_binding_shape(i))
-                im = torch.from_numpy(np.empty(shape, dtype=dtype)).to(device)
-                bindings[name] = Binding(name, dtype, shape, im, int(im.data_ptr()))
+            trt_is_v3 = hasattr(model, 'num_io_tensors')  # TensorRT 10+ API
+            trt_input_name = 'images'
+            if trt_is_v3:
+                input_names = []
+                for i in range(model.num_io_tensors):
+                    name = model.get_tensor_name(i)
+                    dtype = trt.nptype(model.get_tensor_dtype(name))
+                    is_input = model.get_tensor_mode(name) == trt.TensorIOMode.INPUT
+                    if is_input:
+                        input_names.append(name)
+                        if -1 in tuple(model.get_tensor_shape(name)):  # dynamic
+                            dynamic = True
+                            profile = model.get_tensor_profile_shape(name, 0)
+                            context.set_input_shape(name, tuple(profile[2]))
+                        if dtype == np.float16:
+                            fp16 = True
+                    else:
+                        output_names.append(name)
+                    shape = tuple(context.get_tensor_shape(name))
+                    im = torch.from_numpy(np.empty(shape, dtype=dtype)).to(device)
+                    bindings[name] = Binding(name, dtype, shape, im, int(im.data_ptr()))
+                if input_names:
+                    trt_input_name = input_names[0]
+            else:
+                for i in range(model.num_bindings):
+                    name = model.get_binding_name(i)
+                    dtype = trt.nptype(model.get_binding_dtype(i))
+                    if model.binding_is_input(i):
+                        if -1 in tuple(model.get_binding_shape(i)):  # dynamic
+                            dynamic = True
+                            context.set_binding_shape(i, tuple(model.get_profile_shape(0, i)[2]))
+                        if dtype == np.float16:
+                            fp16 = True
+                    else:  # output
+                        output_names.append(name)
+                    shape = tuple(context.get_binding_shape(i))
+                    im = torch.from_numpy(np.empty(shape, dtype=dtype)).to(device)
+                    bindings[name] = Binding(name, dtype, shape, im, int(im.data_ptr()))
             binding_addrs = OrderedDict((n, d.ptr) for n, d in bindings.items())
-            batch_size = bindings['images'].shape[0]  # if dynamic, this is instead max batch size
+            batch_size = bindings[trt_input_name].shape[0]  # if dynamic, this is instead max batch size
         elif coreml:  # CoreML
             LOGGER.info(f'Loading {w} for CoreML inference...')
             import coremltools as ct
@@ -529,18 +553,39 @@ class DetectMultiBackend(nn.Module):
             im = im.cpu().numpy()  # FP32
             y = list(self.executable_network([im]).values())
         elif self.engine:  # TensorRT
-            if self.dynamic and im.shape != self.bindings['images'].shape:
-                i = self.model.get_binding_index('images')
-                self.context.set_binding_shape(i, im.shape)  # reshape if dynamic
-                self.bindings['images'] = self.bindings['images']._replace(shape=im.shape)
+            if self.trt_is_v3:
+                input_name = self.trt_input_name
+                if self.dynamic and im.shape != self.bindings[input_name].shape:
+                    self.context.set_input_shape(input_name, im.shape)  # reshape if dynamic
+                    self.bindings[input_name] = self.bindings[input_name]._replace(shape=im.shape)
+                    for name in self.output_names:
+                        shape = tuple(self.context.get_tensor_shape(name))
+                        self.bindings[name].data.resize_(shape)
+                        self.bindings[name] = self.bindings[name]._replace(shape=shape)
+                s = self.bindings[input_name].shape
+                assert im.shape == s, f"input size {im.shape} {'>' if self.dynamic else 'not equal to'} max model size {s}"
+                self.context.set_tensor_address(input_name, int(im.data_ptr()))
                 for name in self.output_names:
-                    i = self.model.get_binding_index(name)
-                    self.bindings[name].data.resize_(tuple(self.context.get_binding_shape(i)))
-            s = self.bindings['images'].shape
-            assert im.shape == s, f"input size {im.shape} {'>' if self.dynamic else 'not equal to'} max model size {s}"
-            self.binding_addrs['images'] = int(im.data_ptr())
-            self.context.execute_v2(list(self.binding_addrs.values()))
-            y = [self.bindings[x].data for x in sorted(self.output_names)]
+                    self.context.set_tensor_address(name, int(self.bindings[name].data.data_ptr()))
+                if self.device.type != 'cpu':
+                    stream = torch.cuda.current_stream().cuda_stream
+                    self.context.execute_async_v3(stream)
+                else:
+                    self.context.execute_v2(list(self.binding_addrs.values()))
+                y = [self.bindings[x].data for x in sorted(self.output_names)]
+            else:
+                if self.dynamic and im.shape != self.bindings['images'].shape:
+                    i = self.model.get_binding_index('images')
+                    self.context.set_binding_shape(i, im.shape)  # reshape if dynamic
+                    self.bindings['images'] = self.bindings['images']._replace(shape=im.shape)
+                    for name in self.output_names:
+                        i = self.model.get_binding_index(name)
+                        self.bindings[name].data.resize_(tuple(self.context.get_binding_shape(i)))
+                s = self.bindings['images'].shape
+                assert im.shape == s, f"input size {im.shape} {'>' if self.dynamic else 'not equal to'} max model size {s}"
+                self.binding_addrs['images'] = int(im.data_ptr())
+                self.context.execute_v2(list(self.binding_addrs.values()))
+                y = [self.bindings[x].data for x in sorted(self.output_names)]
         elif self.coreml:  # CoreML
             im = im.cpu().numpy()
             im = Image.fromarray((im[0] * 255).astype('uint8'))

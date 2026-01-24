@@ -1,13 +1,25 @@
 import threading
 import time
+import os
+import sys
 
-import cv2
 import numpy as np
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QLibraryInfo, QCoreApplication
 from PyQt5.QtGui import QPixmap, QImage, QTextCursor
 from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QTextEdit, QGridLayout
 
-import sys
+# Force Qt to use PyQt5 plugins (prevents cv2/qt/plugins from being picked).
+_qt_plugins = QLibraryInfo.location(QLibraryInfo.PluginsPath)
+os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = _qt_plugins
+os.environ["QT_PLUGIN_PATH"] = _qt_plugins
+QCoreApplication.setLibraryPaths([_qt_plugins])
+
+import cv2
+
+# Re-apply after OpenCV import in case cv2 overrides plugin paths.
+os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = _qt_plugins
+os.environ["QT_PLUGIN_PATH"] = _qt_plugins
+QCoreApplication.setLibraryPaths([_qt_plugins])
 
 
 # 海康相机图像获取线程
@@ -94,21 +106,21 @@ def hik_camera_get(cfg):
           get_Value(cam, param_type="enum_value", node_name="TriggerMode"),
           get_Value(cam, param_type="float_value", node_name="AcquisitionFrameRate"))
 
-    # 设置设备的一些参数
+    # 设置设备的一些参数（已禁用：使用相机默认参数）
     # ---- Apply camera settings (same logic as main.py) ----
-    set_Value(cam, param_type="enum_value", node_name="ExposureAuto", node_value=int(cfg["AUTO_EXPOSURE"]))
-    set_Value(cam, param_type="enum_value", node_name="GainAuto",     node_value=int(cfg["AUTO_GAIN"]))
-
-    if int(cfg["AUTO_EXPOSURE"]) == 0:
-        set_Value(cam, param_type="float_value", node_name="ExposureTime", node_value=float(cfg["EXPOSURE_TIME_US"]))
-    if int(cfg["AUTO_GAIN"]) == 0:
-        set_Value(cam, param_type="float_value", node_name="Gain", node_value=float(cfg["GAIN_DB"]))
-
-    if cfg["ROI"] is not None:
-        set_Value(cam, param_type="int_value", node_name="OffsetX", node_value=int(cfg["ROI"]["OffsetX"]))
-        set_Value(cam, param_type="int_value", node_name="OffsetY", node_value=int(cfg["ROI"]["OffsetY"]))
-        set_Value(cam, param_type="int_value", node_name="Width",   node_value=int(cfg["ROI"]["Width"]))
-        set_Value(cam, param_type="int_value", node_name="Height",  node_value=int(cfg["ROI"]["Height"]))
+    # set_Value(cam, param_type="enum_value", node_name="ExposureAuto", node_value=int(cfg["AUTO_EXPOSURE"]))
+    # set_Value(cam, param_type="enum_value", node_name="GainAuto",     node_value=int(cfg["AUTO_GAIN"]))
+    #
+    # if int(cfg["AUTO_EXPOSURE"]) == 0:
+    #     set_Value(cam, param_type="float_value", node_name="ExposureTime", node_value=float(cfg["EXPOSURE_TIME_US"]))
+    # if int(cfg["AUTO_GAIN"]) == 0:
+    #     set_Value(cam, param_type="float_value", node_name="Gain", node_value=float(cfg["GAIN_DB"]))
+    #
+    # if cfg["ROI"] is not None:
+    #     set_Value(cam, param_type="int_value", node_name="OffsetX", node_value=int(cfg["ROI"]["OffsetX"]))
+    #     set_Value(cam, param_type="int_value", node_name="OffsetY", node_value=int(cfg["ROI"]["OffsetY"]))
+    #     set_Value(cam, param_type="int_value", node_name="Width",   node_value=int(cfg["ROI"]["Width"]))
+    #     set_Value(cam, param_type="int_value", node_name="Height",  node_value=int(cfg["ROI"]["Height"]))
 
     # 开启设备取流
     start_grab_and_get_data_size(cam)
@@ -203,15 +215,15 @@ class MyUI(QWidget):
 
         # Choose map + output npy by profile
         if self.map_profile == "testmap":
-            self.save_path = self.custom_save_path or "arrays_test_custom.npy"
+            self.save_path = self.custom_save_path or "array_test_custom.npy"
             right_image_path = self.custom_map_path
         else:
             # original battlefield behavior (unchanged)
             if self.state == 'R':
-                self.save_path = 'arrays_test_red.npy'
+                self.save_path = 'array_test_red.npy'
                 right_image_path = "images/map_red.jpg"
             else:
-                self.save_path = 'arrays_test_blue.npy'
+                self.save_path = 'array_test_blue.npy'
                 right_image_path = "images/map_blue.jpg"
 
         # Load right-side map image
@@ -392,34 +404,13 @@ if __name__ == '__main__':
     VIDEO_CFG = None
 
     if camera_mode == "hik":
-        # 0=Off, 1=Once, 2=Continuous  (IMPORTANT: must be int, not "Continuous")
-        AUTO_EXPOSURE = int(input("auto exposure (0/1/2) [2]: ") or "2")
-        AUTO_GAIN     = int(input("auto gain (0/1/2) [2]: ") or "2")
-
-        EXPOSURE_TIME_US = None
-        GAIN_DB = None
-        if AUTO_EXPOSURE == 0:
-            EXPOSURE_TIME_US = float(input("exposure time (us) [16000]: ") or "16000")
-        if AUTO_GAIN == 0:
-            GAIN_DB = float(input("gain (dB) [17.9]: ") or "17.9")
-
-        # Optional ROI (controls output width/height)
-        SET_ROI = (input("set ROI? (y/n) [n]: ").strip().lower() or "n") == "y"
-        ROI = None
-        if SET_ROI:
-            ROI = {
-                "OffsetX": int(input("OffsetX [0]: ") or "0"),
-                "OffsetY": int(input("OffsetY [0]: ") or "0"),
-                "Width":   int(input("Width (e.g. 1536): ")),
-                "Height":  int(input("Height (e.g. 1024): ")),
-            }
-
+        # Use camera defaults; no parameter prompts or overrides.
         HIK_CFG = {
-            "AUTO_EXPOSURE": AUTO_EXPOSURE,
-            "AUTO_GAIN": AUTO_GAIN,
-            "EXPOSURE_TIME_US": EXPOSURE_TIME_US,
-            "GAIN_DB": GAIN_DB,
-            "ROI": ROI,
+            "AUTO_EXPOSURE": None,
+            "AUTO_GAIN": None,
+            "EXPOSURE_TIME_US": None,
+            "GAIN_DB": None,
+            "ROI": None,
         }
 
     elif camera_mode == "video":
@@ -438,8 +429,8 @@ if __name__ == '__main__':
 
     if map_profile == "testmap":
         # right-side map you want to click on
-        custom_map_path = input("custom map image path (e.g. images/my_map.jpg): ").strip().strip('"').strip("'")
-        custom_save_path = input("save npy name [arrays_test_custom.npy]: ").strip().strip('"').strip("'") or "arrays_test_custom.npy"
+        custom_map_path = "images/my_map.jpg"
+        custom_save_path = "array_test_custom.npy"
         num_heights = int(input("number of heights [1]: ").strip() or "1")
 
     if camera_mode == 'test':

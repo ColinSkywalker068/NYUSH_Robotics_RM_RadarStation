@@ -37,6 +37,7 @@ class YOLOv5Detector:
 
         # 加载模型
         self.model = DetectMultiBackend(weights_path, device=self.device, dnn=dnn, fp16=half, data=data)
+        print(f"Backend: engine={self.model.engine}, onnx={self.model.onnx}, pt={self.model.pt}, device={self.device}")
 
         stride, self.names, pt, jit, onnx, engine = self.model.stride, self.model.names, self.model.pt, self.model.jit, self.model.onnx, self.model.engine
         self.img_size = check_img_size(img_size, s=stride)

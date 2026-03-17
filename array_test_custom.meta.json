@@ -1,0 +1,18 @@
+{
+  "format_version": 1,
+  "saved_at_epoch_s": 1773754785.8487265,
+  "state": "R",
+  "map_profile": "testmap",
+  "num_heights": 1,
+  "array_path": "/home/nyu/Desktop/NYUSH_Robotics_RM_RadarStation/array_test_custom.npy",
+  "calibration_metadata_path": "/home/nyu/Desktop/NYUSH_Robotics_RM_RadarStation/array_test_custom.meta.json",
+  "calibration_image_width_px": 1440,
+  "calibration_image_height_px": 1080,
+  "calibration_map_path": "/home/nyu/Desktop/NYUSH_Robotics_RM_RadarStation/images/my_map.jpg",
+  "calibration_map_width_px": 540,
+  "calibration_map_height_px": 960,
+  "runtime_map_path": "/home/nyu/Desktop/NYUSH_Robotics_RM_RadarStation/images/my_map(m).jpg",
+  "brightness_gamma": 0.7,
+  "brightness_bias": 25,
+  "brightness_clahe": true
+}

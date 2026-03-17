@@ -20,7 +20,7 @@ from utils.general import (LOGGER, check_img_size, scale_boxes)
 import random
 import torch
 import numpy as np
-from utils.general import non_max_suppression, xyxy2xywh
+from utils.general import non_max_suppression
 from utils.torch_utils import select_device
 from utils.plots import Annotator
 from models.common import DetectMultiBackend
@@ -61,7 +61,7 @@ class YOLOv5Detector:
     def predict(self, img):
         # 对图片进行处理
 
-        im0 = img.copy()
+        im0 = img
         im = letterbox(im0, self.img_size, self.model.stride, auto=self.model.pt)[0]
         im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
         im = np.ascontiguousarray(im)
@@ -90,9 +90,13 @@ class YOLOv5Detector:
                 det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], im0.shape).round()
                 # print(det)
                 for *xyxy, conf, cls in reversed(det):
-                    xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4))).view(-1).tolist()
-                    xywh = [round(x) for x in xywh]
-                    xywh = [xywh[0] - xywh[2] // 2, xywh[1] - xywh[3] // 2, xywh[2], xywh[3]]
+                    x1, y1, x2, y2 = (float(v) for v in xyxy)
+                    xywh = [
+                        int(round(x1)),
+                        int(round(y1)),
+                        int(round(x2 - x1)),
+                        int(round(y2 - y1)),
+                    ]
                     if self.ui:
                         annotator = Annotator(np.ascontiguousarray(img), line_width=3, example=str(self.names))
                         # print(int(cls))

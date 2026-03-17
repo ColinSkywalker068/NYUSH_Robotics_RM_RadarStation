@@ -2,6 +2,7 @@ import threading
 import time
 import os
 import sys
+import json
 
 import numpy as np
 from PyQt5.QtCore import Qt, QTimer, QLibraryInfo, QCoreApplication
@@ -20,6 +21,38 @@ import cv2
 os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = _qt_plugins
 os.environ["QT_PLUGIN_PATH"] = _qt_plugins
 QCoreApplication.setLibraryPaths([_qt_plugins])
+
+
+def build_brightness_lut(gamma: float, bias: int):
+    if abs(gamma - 1.0) < 1e-6 and bias == 0:
+        return None
+    values = np.arange(256, dtype=np.float32)
+    if abs(gamma - 1.0) > 1e-6:
+        inv_gamma = 1.0 / gamma
+        values = np.power(values / 255.0, inv_gamma) * 255.0
+    if bias != 0:
+        values = np.clip(values + bias, 0, 255)
+    return values.astype(np.uint8)
+
+
+def apply_brightness(img, lut=None, clahe=None):
+    if img is None:
+        return img
+    out = img.copy()
+    if clahe is not None:
+        lab = cv2.cvtColor(out, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        l = clahe.apply(l)
+        out = cv2.merge([l, a, b])
+        out = cv2.cvtColor(out, cv2.COLOR_LAB2BGR)
+    if lut is not None:
+        out = cv2.LUT(out, lut)
+    return out
+
+
+def calibration_metadata_path(save_path: str) -> str:
+    root, _ = os.path.splitext(save_path)
+    return root + ".meta.json"
 
 
 # 海康相机图像获取线程
@@ -147,9 +180,21 @@ def hik_camera_get(cfg):
             print("no data[0x%x]" % ret)
 
 
-def video_capture_get():
+def video_capture_get(cfg=None):
     global camera_image
-    cam = cv2.VideoCapture(1)
+    device_index = 1
+    width = None
+    height = None
+    if cfg is not None:
+        device_index = int(cfg.get("index", 1))
+        width = cfg.get("w")
+        height = cfg.get("h")
+
+    cam = cv2.VideoCapture(device_index)
+    if width is not None:
+        cam.set(cv2.CAP_PROP_FRAME_WIDTH, int(width))
+    if height is not None:
+        cam.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
     while True:
         ret, img = cam.read()
         if ret:
@@ -161,7 +206,8 @@ color = [(255, 255, 255), (0, 255, 0), (0, 0, 255)]
 
 
 class MyUI(QWidget):
-    def __init__(self, state, map_profile="battle", custom_map_path=None, custom_save_path=None, num_heights=3):
+    def __init__(self, state, map_profile="battle", custom_map_path=None, custom_save_path=None,
+                 num_heights=3, brightness_gamma=0.7, brightness_bias=25, brightness_clahe=True):
         super().__init__()
         self.capturing = True
 
@@ -170,6 +216,11 @@ class MyUI(QWidget):
         self.custom_map_path = custom_map_path
         self.custom_save_path = custom_save_path
         self.num_heights = num_heights
+        self.brightness_gamma = brightness_gamma
+        self.brightness_bias = brightness_bias
+        self.brightness_clahe = brightness_clahe
+        self.brightness_lut = build_brightness_lut(self.brightness_gamma, self.brightness_bias)
+        self.clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8)) if self.brightness_clahe else None
 
         self.initUI()
 
@@ -217,6 +268,7 @@ class MyUI(QWidget):
         if self.map_profile == "testmap":
             self.save_path = self.custom_save_path or "array_test_custom.npy"
             right_image_path = self.custom_map_path
+            runtime_map_path = os.path.join(os.path.dirname(right_image_path), "my_map(m).jpg")
         else:
             # original battlefield behavior (unchanged)
             if self.state == 'R':
@@ -225,14 +277,24 @@ class MyUI(QWidget):
             else:
                 self.save_path = 'array_test_blue.npy'
                 right_image_path = "images/map_blue.jpg"
+            runtime_map_path = right_image_path
+
+        self.metadata_path = calibration_metadata_path(self.save_path)
+        self.calibration_map_path = os.path.abspath(right_image_path)
+        self.runtime_map_path = os.path.abspath(runtime_map_path)
 
         # Load right-side map image
         right_image = cv2.imread(right_image_path)
         if right_image is None:
             raise FileNotFoundError(f"Could not read map image: {right_image_path}")
         # _,left_image = self.camera_capture.read()
-        left_image = camera_image
+        left_image = apply_brightness(camera_image, self.brightness_lut, self.clahe)
         right_image = cv2.imread(right_image_path)
+
+        self.source_image_width = int(left_image.shape[1])
+        self.source_image_height = int(left_image.shape[0])
+        self.calibration_map_width = int(right_image.shape[1])
+        self.calibration_map_height = int(right_image.shape[0])
 
         # 记录缩放比例
         self.left_scale_x = left_image.shape[1] / 1350.0
@@ -301,7 +363,9 @@ class MyUI(QWidget):
 
     def update_camera(self):
         if self.capturing:
-            img0 = camera_image
+            img0 = apply_brightness(camera_image, self.brightness_lut, self.clahe)
+            if img0 is None:
+                return
             left_image = cv2.cvtColor(img0, cv2.COLOR_BGR2RGB)
             self.left_image = cv2.resize(left_image, (1350, 1000))
             self.update_images()
@@ -361,6 +425,26 @@ class MyUI(QWidget):
 
         print('加载坐标')
 
+    def _build_calibration_metadata(self):
+        return {
+            "format_version": 1,
+            "saved_at_epoch_s": time.time(),
+            "state": self.state,
+            "map_profile": self.map_profile,
+            "num_heights": int(self.num_heights),
+            "array_path": os.path.abspath(self.save_path),
+            "calibration_metadata_path": os.path.abspath(self.metadata_path),
+            "calibration_image_width_px": int(self.source_image_width),
+            "calibration_image_height_px": int(self.source_image_height),
+            "calibration_map_path": self.calibration_map_path,
+            "calibration_map_width_px": int(self.calibration_map_width),
+            "calibration_map_height_px": int(self.calibration_map_height),
+            "runtime_map_path": self.runtime_map_path,
+            "brightness_gamma": float(self.brightness_gamma),
+            "brightness_bias": int(self.brightness_bias),
+            "brightness_clahe": bool(self.brightness_clahe),
+        }
+
     def button4_clicked(self):
         # 按钮4点击事件
         print(self.image_points)
@@ -371,9 +455,13 @@ class MyUI(QWidget):
             self.T.append(cv2.getPerspectiveTransform(image_point, map_point))
 
         np.save(self.save_path, self.T)
+        metadata = self._build_calibration_metadata()
+        with open(self.metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=True, indent=2)
 
         self.append_text('保存计算')
         print('保存计算', self.save_path)
+        print('保存标定元数据', self.metadata_path)
         time.sleep(1)
         sys.exit()
 
@@ -426,6 +514,9 @@ if __name__ == '__main__':
     custom_map_path = None
     custom_save_path = None
     num_heights = 3
+    brightness_gamma = float(os.environ.get("NYUSH_CALIB_BRIGHTNESS_GAMMA", "0.7"))
+    brightness_bias = int(os.environ.get("NYUSH_CALIB_BRIGHTNESS_BIAS", "25"))
+    brightness_clahe = os.environ.get("NYUSH_CALIB_BRIGHTNESS_CLAHE", "true").strip().lower() not in {"0", "false", "no", "n"}
 
     if map_profile == "testmap":
         # right-side map you want to click on
@@ -453,7 +544,7 @@ if __name__ == '__main__':
         thread_camera.start()
     elif camera_mode == 'video':
         # USB相机图像获取线程
-        thread_camera = threading.Thread(target=hik_camera_get, args=(HIK_CFG,), daemon=True)
+        thread_camera = threading.Thread(target=video_capture_get, args=(VIDEO_CFG,), daemon=True)
         thread_camera.start()
 
     while camera_image is None:
@@ -461,5 +552,7 @@ if __name__ == '__main__':
         time.sleep(0.5)
     app = QApplication(sys.argv)
     myui = MyUI(state=state, map_profile=map_profile, custom_map_path=custom_map_path,
-            custom_save_path=custom_save_path, num_heights=num_heights)
+            custom_save_path=custom_save_path, num_heights=num_heights,
+            brightness_gamma=brightness_gamma, brightness_bias=brightness_bias,
+            brightness_clahe=brightness_clahe)
     sys.exit(app.exec_())

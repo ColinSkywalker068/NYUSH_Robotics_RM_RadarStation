@@ -56,11 +56,13 @@ MAP_MODE = (input("map mode (battle/testmap) [battle]: ").strip().lower() or "ba
 TEST_MAP_PATH = None
 TEST_NPY_PATH = None
 TEST_MASK_PATH = None  # optional
+TEST_CALIB_MAP_PATH = None
 
 if MAP_MODE == "testmap":
     TEST_MAP_PATH = str(Path("images/my_map(m).jpg").expanduser())
     TEST_NPY_PATH = str(Path("array_test_custom.npy").expanduser())
     TEST_MASK_PATH = None
+    TEST_CALIB_MAP_PATH = str(Path("images/my_map.jpg").expanduser())
 # =========================
 
 import threading
@@ -77,6 +79,7 @@ import sys
 import cv2
 import numpy as np
 from detect_function import YOLOv5Detector
+from map_coords import map_to_display_and_ref_coords, testmap_calibration_to_display_coords
 from RM_serial_py.ser_api import  build_send_packet, receive_packet, Radar_decision, \
     build_data_decision, build_data_radar_all
 from threading import Lock
@@ -106,9 +109,12 @@ else:
     # --- test map mode ---
     loaded_arrays = np.load(TEST_NPY_PATH, allow_pickle=True)
     map_image = cv2.imread(TEST_MAP_PATH)
+    calib_map_image = cv2.imread(TEST_CALIB_MAP_PATH)
 
     if map_image is None:
         raise FileNotFoundError(f"Cannot read test map image: {TEST_MAP_PATH}")
+    if calib_map_image is None:
+        raise FileNotFoundError(f"Cannot read calibration test map image: {TEST_CALIB_MAP_PATH}")
 
     if TEST_MASK_PATH:
         mask_image = cv2.imread(TEST_MASK_PATH)
@@ -118,6 +124,7 @@ else:
         # all-black mask => forces the code to accept the ground layer first
         mask_image = np.zeros_like(map_image)
     DISPLAY_MAP_PATH = TEST_MAP_PATH
+    TEST_CALIB_H, TEST_CALIB_W = calib_map_image.shape[:2]
 
 nT = len(loaded_arrays)
 # 导入战场每个高度的不同仿射变化矩阵
@@ -213,6 +220,9 @@ guess_table = {
     "B7": [(2240, 870), (2240, 603)],
     # "B7": [(0, 0), (22.4, 6.3)]
 }
+
+if MAP_MODE == "testmap":
+    guess_table = {name: [(0, 0), (0, 0)] for name in guess_table}
 
 
 # 机器人坐标滤波器（滑动窗口均值滤波）
@@ -480,12 +490,14 @@ def ser_send():
 
     # 发送蓝方机器人坐标
     def send_point_B(send_name, all_filter_data):
-        # front_time = time.time()
-        # 转换为地图坐标系
-        filtered_xyz = (2800 - all_filter_data[send_name][1], all_filter_data[send_name][0])
-        # 转换为裁判系统单位M
-        ser_x = int(filtered_xyz[0]) * 10 / 10
-        ser_y = int(1500 - filtered_xyz[1]) * 10 / 10
+        (_, _), (ser_x, ser_y) = map_to_display_and_ref_coords(
+            all_filter_data[send_name][0],
+            all_filter_data[send_name][1],
+            MAP_MODE,
+            state,
+            MAP_W,
+            MAP_H,
+        )
         # 打包坐标数据包
         # data = build_data_radar(mapping_table.get(send_name), ser_x, ser_y)
         # packet, seq_s = build_send_packet(data, seq_s, [0x03, 0x05])
@@ -498,12 +510,14 @@ def ser_send():
         return ser_x,ser_y
     # 发送红发机器人坐标
     def send_point_R(send_name, all_filter_data):
-        # front_time = time.time()
-        # 转换为地图坐标系
-        filtered_xyz = (all_filter_data[send_name][1], 1500 - all_filter_data[send_name][0])
-        # 转换为裁判系统单位M
-        ser_x = int(filtered_xyz[0]) * 10 / 10
-        ser_y = int(1500 - filtered_xyz[1]) * 10 / 10
+        (_, _), (ser_x, ser_y) = map_to_display_and_ref_coords(
+            all_filter_data[send_name][0],
+            all_filter_data[send_name][1],
+            MAP_MODE,
+            state,
+            MAP_W,
+            MAP_H,
+        )
         # 打包坐标数据包
         # data = build_data_radar(mapping_table.get(send_name), ser_x, ser_y)
         # packet, seq_s = build_send_packet(data, seq_s, [0x03, 0x05])
@@ -863,6 +877,13 @@ while True:
                         # 低到高依次仿射变化
                         # 先套用地面层仿射变化矩阵
                         mapped_point = cv2.perspectiveTransform(camera_point.reshape(1, 1, 2), M_ground)
+                        if MAP_MODE == "testmap":
+                            x_m, y_m = testmap_calibration_to_display_coords(
+                                mapped_point[0][0][0],
+                                mapped_point[0][0][1],
+                                TEST_CALIB_W,
+                            )
+                            mapped_point = np.array([[[x_m, y_m]]], dtype=np.float32)
                         # 限制转换后的点在地图范围内
                         x_c = max(int(mapped_point[0][0][0]), 0)
                         y_c = max(int(mapped_point[0][0][1]), 0)
@@ -877,6 +898,13 @@ while True:
                         else:
                             # 不满足则继续套用R型高地层仿射变换矩阵
                             mapped_point = cv2.perspectiveTransform(camera_point.reshape(1, 1, 2), M_height_r)
+                            if MAP_MODE == "testmap":
+                                x_m, y_m = testmap_calibration_to_display_coords(
+                                    mapped_point[0][0][0],
+                                    mapped_point[0][0][1],
+                                    TEST_CALIB_W,
+                                )
+                                mapped_point = np.array([[[x_m, y_m]]], dtype=np.float32)
                             # 限制转换后的点在地图范围内
                             x_c = max(int(mapped_point[0][0][0]), 0)
                             y_c = max(int(mapped_point[0][0][1]), 0)
@@ -891,6 +919,13 @@ while True:
                             else:
                                 # 不满足则继续套用环形高地层仿射变换矩阵
                                 mapped_point = cv2.perspectiveTransform(camera_point.reshape(1, 1, 2), M_height_g)
+                                if MAP_MODE == "testmap":
+                                    x_m, y_m = testmap_calibration_to_display_coords(
+                                        mapped_point[0][0][0],
+                                        mapped_point[0][0][1],
+                                        TEST_CALIB_W,
+                                    )
+                                    mapped_point = np.array([[[x_m, y_m]]], dtype=np.float32)
                                 # 限制转换后的点在地图范围内
                                 x_c = max(int(mapped_point[0][0][0]), 0)
                                 y_c = max(int(mapped_point[0][0][1]), 0)
@@ -918,22 +953,24 @@ while True:
                     color_m = (0, 0, 255)
                 else:
                     color_m = (255, 0, 0)
-                if state == 'R':
-                    filtered_xyz = (MAP_W - xyxy[1], xyxy[0])
-                else:
-                    filtered_xyz = (xyxy[1], MAP_H - xyxy[0])
+                (display_x, display_y), (ser_x, ser_y) = map_to_display_and_ref_coords(
+                    xyxy[0],
+                    xyxy[1],
+                    MAP_MODE,
+                    state,
+                    MAP_W,
+                    MAP_H,
+                )
                 # 缩放坐标到地图图像
                 # 只绘制敌方阵营的机器人（这里不会绘制盲区预测的机器人）
                 if name[0] != state:
-                    cv2.circle(map, (int(filtered_xyz[0]), int(filtered_xyz[1])), 15, color_m, -1)  # 绘制圆
+                    cv2.circle(map, (int(display_x), int(display_y)), 15, color_m, -1)  # 绘制圆
                     cv2.putText(map, str(name),
-                                (int(filtered_xyz[0]) - 5, int(filtered_xyz[1]) + 5),
+                                (int(display_x) - 5, int(display_y) + 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 255), 5)
-                    ser_x = int(filtered_xyz[0]) * 10 / 10
-                    ser_y = int(MAP_H - filtered_xyz[1]) * 10 / 10
 
                     cv2.putText(map, "(" + str(ser_x) + "," + str(ser_y) + ")",
-                                (int(filtered_xyz[0]) - 100, int(filtered_xyz[1]) + 60),
+                                (int(display_x) - 100, int(display_y) + 60),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 4)
 
     te = time.perf_counter()

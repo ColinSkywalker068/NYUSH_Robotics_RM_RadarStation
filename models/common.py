@@ -367,7 +367,11 @@ class DetectMultiBackend(nn.Module):
             check_requirements(('onnx', 'onnxruntime-gpu' if cuda else 'onnxruntime'))
             import onnxruntime
 
-            providers = ["CPUExecutionProvider"]   # force CPU, avoids CUDA DLL errors on Windows
+            # 优先 GPU 加速，避免 CPU 推理导致卡顿
+            if cuda:
+                providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            else:
+                providers = ["CPUExecutionProvider"]
             session = onnxruntime.InferenceSession(w, providers=providers)
 
             output_names = [x.name for x in session.get_outputs()]
